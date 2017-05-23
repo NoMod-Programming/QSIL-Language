@@ -3,8 +3,10 @@
 import time
 import threading
 import struct
+import os
 from io import BytesIO
 
+imageFormat = 1 # The image format version we're using
 
 class QSILObject:
     """
@@ -17,15 +19,16 @@ class Pointer(QSILObject, object):
     A pointer of sorts to an Object. This has a .yourself
     property that returns the object it refers to
     """
-    def __init__(self, anId):
+    def __init__(self, anId, interp):
         self.id = anId
+        self.interp = interp
 
     def __repr__(self):
         return "Pointer({})".format(self.id)
 
     @property
     def yourself(self):
-        return allobjects[self.id]
+        return self.interp.allobjects[self.id]
 
     def appendToSet(self, aCollection):
         aCollection.add(self)
@@ -39,10 +42,11 @@ class Object(QSILObject, dict):
     An object exists in memory. It can either be used internally,
     such as a stack "frame", or exist as a live object in QSIL
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, interp, *args, **kwargs):
         super(Object, self).__init__(*args, **kwargs)
         self.id = 0
         self.directMemory = []
+        self.interp = interp
 
     def __hash__(self):
         return id(self)
@@ -75,193 +79,12 @@ class Object(QSILObject, dict):
                 value.appendToSet(aCollection)
 
 
-def read(bytesToRead):
-    """
-    Read all the objects from the given bytes() object
-    """
-    def peek(length=1):
-        pos = byteStream.tell()
-        ret = byteStream.read(length)
-        byteStream.seek(pos)
-        return ret
-    byteStream = BytesIO(bytesToRead)
-    assert byteStream.read(4) == b'QSIL', "Unknown file format"
-    assert int(byteStream.read(1)) <= 1, "VM too old"
-
-    def readSomething():
-        toRead = int(byteStream.read(1)[0])
-        if toRead == 0x00:
-            return readObject()
-        elif toRead == 0x02:
-            return readAssociation()
-        # elif toRead == 0x03  # Reserved for value in association
-        elif toRead == 0x04:
-            return readInt()
-        elif toRead == 0x05:
-            return readFloat()
-        elif toRead == 0x06:
-            return readPointer()
-        elif toRead == 0x07:
-            return readString()
-        raise ValueError("Unknown type:", toRead)
-
-    def readFloat():
-        return struct.unpack('>d', byteStream.read(8))[0]
-
-    def readInt():
-        return struct.unpack('>i', byteStream.read(4))[0]
-
-    def readPointer():
-        anId = byteStream.read(6)
-        assert byteStream.read(1)[0] == 0x06
-        return Pointer(anId)
-
-    def readAssociation():
-        """Read an association. Used internally"""
-        key = readSomething()
-        assert byteStream.read(1)[0] == 0x03
-        value = readSomething()
-        return (key, value)
-
-    def readString():
-        theCode = b''
-        while byteStream.tell() < len(byteStream.getvalue()):
-            # Until we reach an "END STRING" marker, keep reading
-            nextChar = byteStream.read(1)
-            if nextChar[0] == 0x07:
-                break
-            elif nextChar[0] == 0x08:
-                nextChar = byteStream.read(1)
-            theCode += nextChar
-        return theCode
-
-    def readObject():
-        """Read an object"""
-        currentObj = Object()
-        objId = byteStream.read(6)
-        currentObj.setId(objId)
-        allobjects[objId] = currentObj
-        toRead = None
-        while (byteStream.tell() < len(byteStream.getvalue())):
-            toRead = peek()[0]
-            if toRead == 0x02:
-                # Special handling for associations
-                byteStream.read(1)
-                assoc = readAssociation()
-                currentObj[assoc[0]] = assoc[1]
-            elif toRead == 0x01:
-                break
-            else:
-                toAdd = readSomething()
-                currentObj.directMemory.append(toAdd)
-        byteStream.read(1)  # Pop end of object descriptor
-        return currentObj
-
-    def readObjectNoId():
-        """Read an object"""
-        currentObj = Object()
-        toRead = None
-        while (byteStream.tell() < len(byteStream.getvalue())):
-            toRead = peek()[0]
-            if toRead == 0x02:
-                # Special handling for associations
-                byteStream.read(1)
-                assoc = readAssociation()
-                currentObj[assoc[0]] = assoc[1]
-            elif toRead == 0x01:
-                break
-            else:
-                toAdd = readSomething()
-                currentObj.directMemory.append(toAdd)
-        byteStream.read(1)  # Pop end of object descriptor
-        return currentObj
-
-    def readStack():
-        newContext = Object()
-        if byteStream.read(2) == b'ST':
-            # Read a new context. Otherwise, return a blank one
-            newContext['pc'] = readInt()
-            newContext['method'] = readPointer()
-            newContext['receiver'] = readPointer()
-            assert byteStream.read(1)[0] == 0x00
-            newContext['args'] = readObjectNoId()
-            assert byteStream.read(1)[0] == 0x00
-            newContext['tempvars'] = readObjectNoId()
-            assert byteStream.read(1)[0] == 0x00
-            newContext['stack'] = readObjectNoId()
-            newContext['homeContext'] = readStack()  # Nested contexts...
-        return newContext
-
-    while byteStream.tell() < len(byteStream.getvalue()) and peek()[0] == 0x00:
-        byteStream.read(1)
-        readObject()
-    assert byteStream.read(3) == b'\xab\xcd\xef', "No entry context"
-    interp.setContext(readStack())
-
-
-def rehashObjects():
-    """Create a new unique id for every object.
-Make sure to update all pointers to each object."""
-    global allobjects
-    minId = newId = 0  # Id to start with
-    hashMap = {}
-    newAllObjects = {}
-    uniqueobjects = set()
-
-    def store_48bitInt(intToStore):
-        """Return the bytes for storage of a 48-bit integer"""
-        if intToStore < -140737488355328 or intToStore >= 140737488355328:
-            raise ValueError("Outside 48-bit integer range")
-        if intToStore < 0:
-            finalInt = 281474976710656 + intToStore
-        else:
-            finalInt = intToStore
-
-        def digitAt(theInt, toFind):
-            if toFind > 6:
-                return 0
-            if theInt < 0:
-                return (0 - theInt >> ((toFind - 1) * 8)) & 0xFF
-            return theInt >> ((toFind - 1) * 8) & 0xFF
-
-        return bytes([digitAt(intToStore, x) for x in range(6, 0, -1)])
-
-    for oldid, theObject in allobjects.items():
-        theObject.appendToSet(uniqueobjects)
-    for theObject in uniqueobjects:
-        if sum(c << (i * 8) for i, c in enumerate(theObject.id[::-1])) < minId:
-            continue  # Do not change the ID for this object
-        if theObject.id in hashMap:
-            theObject.id = hashMap[theObject.id]
-        else:
-            hashMap[theObject.id] = store_48bitInt(newId)
-            theObject.id = store_48bitInt(newId)
-            newId += 1
-        if isinstance(theObject, Object):
-            newAllObjects[theObject.id] = theObject
-    uniqueobjects = set()
-    interp.saveToContext()
-    thisContext = interp.activeContext
-    while 'pc' in thisContext:
-        thisContext.appendToSet(uniqueobjects)
-        for anObject in thisContext.directMemory:
-            if isinstance(anObject, QSILObject):
-                anObject.appendToSet(uniqueobjects)
-        thisContext = thisContext['homeContext']
-    uniqueobjects = [x for x in uniqueobjects if not isinstance(x.id, int)]
-    for theObject in uniqueobjects:
-        if sum(c << (i * 8) for i, c in enumerate(theObject.id[::-1])) < minId:
-            continue  # Do not change the ID for this object
-        theObject.id = hashMap[theObject.id]
-    interp.readFromContext()
-    allobjects = newAllObjects
-
-
 class Interpreter(object):
     """
     The interpreter interprets the bytecodes that QSIL runs on.
     """
     def __init__(self):
+        self.allobjects = {}
         self.pc = 0
         self._method = None
         self._receiver = None
@@ -269,6 +92,7 @@ class Interpreter(object):
         self.args = []
         self.tempvars = []
         self._stack = []
+        self.imageFileName = "qsil{version}.image".format(version=imageFormat)
 
     def setContext(self, aContextObject):
         self.activeContext = aContextObject
@@ -324,7 +148,7 @@ Push a new context object.
     def stack(self):
         return self._stack.yourself.directMemory
 
-    def doPrimitive(self, primByte):
+    def doPrimitive(self, primbyte):
         r"""
         Perform a single primitive.
         # \x00    - integer add
@@ -334,8 +158,10 @@ Push a new context object.
         # \x04    - integer comparison
         # \x05    - integer bitshift left
         # \x06    - integer bitshift right
+        # \xF0    - get image file name
+        # \xFF    - save image with filename
         """
-        if primByte == 0x00:
+        if primbyte == 0x00:
             # Primitive integer add
             arg2 = self.stack.pop()
             arg1 = self.stack.pop()
@@ -375,6 +201,13 @@ Push a new context object.
             arg2 = self.stack.pop()
             arg1 = self.stack.pop()
             self.stack.append(arg1 >> arg2)
+        elif primbyte == 0xF0:
+            self.stack.append(self.imageFileName)
+        elif primbyte == 0xFF:
+            fileName = self.stack.pop()
+            saveThread = threading.Thread(target=self.saveToFile,args=(fileName,))
+            saveThread.start()
+            saveThread.join()
 
     def interpretOne(self):
         r"""
@@ -403,7 +236,7 @@ Push a new context object.
             # Stack Access
             if nextByte == 0x00:
                 # pushRcvr
-                self.stack.append(Pointer(self.receiver.id))
+                self.stack.append(Pointer(self.receiver.id,self))
             elif nextByte == 0x01:
                 # pushInst: [0]
                 self.pc += 1
@@ -429,13 +262,13 @@ Push a new context object.
                 messageName = self.stack.pop()
                 receiver = self.stack.pop()
                 message = receiver.yourself[b'methods'].yourself[messageName]
-                newContext = Object()
+                newContext = Object(self)
                 newContext['pc'] = 0
-                newContext['method'] = Pointer(message.id)
-                newContext['receiver'] = Pointer(receiver.id)
-                newContext['args'] = Object()
-                newContext['tempvars'] = Object()
-                newContext['stack'] = Object()
+                newContext['method'] = Pointer(message.id, self)
+                newContext['receiver'] = Pointer(receiver.id, self)
+                newContext['args'] = Object(self)
+                newContext['tempvars'] = Object(self)
+                newContext['stack'] = Object(self)
                 for arg in range(len(messageName.split(b':')) - 1):
                     newContext['args'].directMemory.append(self.stack.pop())
                 newContext['args'].directMemory.reverse()
@@ -496,89 +329,281 @@ Push a new context object.
             raise ValueError("Unknown bytecode: %s", nextByte)
         self.pc += 1
 
+    def readFile(self,fileName):
+        if not os.path.exists(fileName):
+            raise FileNotFoundError("File does not exist: ",fileName)
+        with open(fileName,'rb') as toRead:
+            self.imageFileName = fileName
+            self.read(toRead.read())
+        self.rehashObjects()
 
-def serializeObjects():
-    r"""
-    Serialize all the objects and return a bytes() object
-    that can be used to load an exact copy of the current
-    environment
-    # File format:
-    # \x00 - start object (id is next 6 chars)
-    # \x01 - end object
-    # \x02 - start/end object key
-    # \x03 - start/end object value
-    # \x04 - start int (32 bit)
-    # \x05 - start float (actually a double)
-    # \x06 - start/end pointer
-    # \x07 - start/end string
-    # (\x08) - escape next character
-    """
-    aStream = BytesIO()
+    def read(self,bytesToRead):
+        """
+        Read all the objects from the given bytes() object
+        """
+        def peek(length=1):
+            pos = byteStream.tell()
+            ret = byteStream.read(length)
+            byteStream.seek(pos)
+            return ret
+        byteStream = BytesIO(bytesToRead)
+        assert byteStream.read(4) == b'QSIL', "Unknown file format"
+        assert int(byteStream.read(1)) <= imageFormat, "VM too old"
 
-    def writeSomething(anObject, printId=True):
-        if isinstance(anObject, Pointer):
-            aStream.write(b'\x06')
-            aStream.write(anObject.id)
-            aStream.write(b'\x06')
-        elif isinstance(anObject, Object):
-            aStream.write(b'\x00')
-            if printId:
+        def readSomething():
+            toRead = int(byteStream.read(1)[0])
+            if toRead == 0x00:
+                return readObject()
+            elif toRead == 0x02:
+                return readAssociation()
+            # elif toRead == 0x03  # Reserved for value in association
+            elif toRead == 0x04:
+                return readInt()
+            elif toRead == 0x05:
+                return readFloat()
+            elif toRead == 0x06:
+                return readPointer()
+            elif toRead == 0x07:
+                return readString()
+            raise ValueError("Unknown type:", toRead)
+
+        def readFloat():
+            return struct.unpack('>d', byteStream.read(8))[0]
+
+        def readInt():
+            return struct.unpack('>i', byteStream.read(4))[0]
+
+        def readPointer():
+            anId = byteStream.read(6)
+            assert byteStream.read(1)[0] == 0x06
+            return Pointer(anId,self)
+
+        def readAssociation():
+            """Read an association. Used internally"""
+            key = readSomething()
+            assert byteStream.read(1)[0] == 0x03
+            value = readSomething()
+            return (key, value)
+
+        def readString():
+            theCode = b''
+            while byteStream.tell() < len(byteStream.getvalue()):
+                # Until we reach an "END STRING" marker, keep reading
+                nextChar = byteStream.read(1)
+                if nextChar[0] == 0x07:
+                    break
+                elif nextChar[0] == 0x08:
+                    nextChar = byteStream.read(1)
+                theCode += nextChar
+            return theCode
+
+        def readObject():
+            """Read an object"""
+            currentObj = Object(self)
+            objId = byteStream.read(6)
+            currentObj.setId(objId)
+            self.allobjects[objId] = currentObj
+            toRead = None
+            while (byteStream.tell() < len(byteStream.getvalue())):
+                toRead = peek()[0]
+                if toRead == 0x02:
+                    # Special handling for associations
+                    byteStream.read(1)
+                    assoc = readAssociation()
+                    currentObj[assoc[0]] = assoc[1]
+                elif toRead == 0x01:
+                    break
+                else:
+                    toAdd = readSomething()
+                    currentObj.directMemory.append(toAdd)
+            byteStream.read(1)  # Pop end of object descriptor
+            return currentObj
+
+        def readObjectNoId():
+            """Read an object"""
+            currentObj = Object(self)
+            toRead = None
+            while (byteStream.tell() < len(byteStream.getvalue())):
+                toRead = peek()[0]
+                if toRead == 0x02:
+                    # Special handling for associations
+                    byteStream.read(1)
+                    assoc = readAssociation()
+                    currentObj[assoc[0]] = assoc[1]
+                elif toRead == 0x01:
+                    break
+                else:
+                    toAdd = readSomething()
+                    currentObj.directMemory.append(toAdd)
+            byteStream.read(1)  # Pop end of object descriptor
+            return currentObj
+
+        def readStack():
+            newContext = Object(self)
+            if byteStream.read(2) == b'ST':
+                # Read a new context. Otherwise, return a blank one
+                newContext['pc'] = readInt()
+                newContext['method'] = readPointer()
+                newContext['receiver'] = readPointer()
+                assert byteStream.read(1)[0] == 0x00
+                newContext['args'] = readObjectNoId()
+                assert byteStream.read(1)[0] == 0x00
+                newContext['tempvars'] = readObjectNoId()
+                assert byteStream.read(1)[0] == 0x00
+                newContext['stack'] = readObjectNoId()
+                newContext['homeContext'] = readStack()  # Nested contexts...
+            return newContext
+
+        while byteStream.tell() < len(byteStream.getvalue()) and peek()[0] == 0x00:
+            byteStream.read(1)
+            readObject()
+        assert byteStream.read(3) == b'\xab\xcd\xef', "No entry context"
+        self.setContext(readStack())
+
+
+    def rehashObjects(self):
+        """Create a new unique id for every object.
+    Make sure to update all pointers to each object."""
+        minId = newId = 0  # Id to start with
+        hashMap = {}
+        newAllObjects = {}
+        uniqueobjects = set()
+
+        def store_48bitInt(intToStore):
+            """Return the bytes for storage of a 48-bit integer"""
+            if intToStore < -140737488355328 or intToStore >= 140737488355328:
+                raise ValueError("Outside 48-bit integer range")
+            if intToStore < 0:
+                finalInt = 281474976710656 + intToStore
+            else:
+                finalInt = intToStore
+
+            def digitAt(theInt, toFind):
+                if toFind > 6:
+                    return 0
+                if theInt < 0:
+                    return (0 - theInt >> ((toFind - 1) * 8)) & 0xFF
+                return theInt >> ((toFind - 1) * 8) & 0xFF
+
+            return bytes([digitAt(intToStore, x) for x in range(6, 0, -1)])
+
+        for oldid, theObject in self.allobjects.items():
+            theObject.appendToSet(uniqueobjects)
+        for theObject in uniqueobjects:
+            if sum(c << (i * 8) for i, c in enumerate(theObject.id[::-1])) < minId:
+                continue  # Do not change the ID for this object
+            if theObject.id in hashMap:
+                theObject.id = hashMap[theObject.id]
+            else:
+                hashMap[theObject.id] = store_48bitInt(newId)
+                theObject.id = store_48bitInt(newId)
+                newId += 1
+            if isinstance(theObject, Object):
+                newAllObjects[theObject.id] = theObject
+        uniqueobjects = set()
+        self.saveToContext()
+        thisContext = self.activeContext
+        while 'pc' in thisContext:
+            thisContext.appendToSet(uniqueobjects)
+            for anObject in thisContext.directMemory:
+                if isinstance(anObject, QSILObject):
+                    anObject.appendToSet(uniqueobjects)
+            thisContext = thisContext['homeContext']
+        uniqueobjects = [x for x in uniqueobjects if not isinstance(x.id, int)]
+        for theObject in uniqueobjects:
+            if sum(c << (i * 8) for i, c in enumerate(theObject.id[::-1])) < minId:
+                continue  # Do not change the ID for this object
+            theObject.id = hashMap[theObject.id]
+        self.readFromContext()
+        self.allobjects = newAllObjects
+
+    def saveToFile(self,fileName):
+        self.saveToContext()
+        with open(fileName,'wb') as toWrite:
+            self.pc += 1 # Save with stack pointer incremented
+            toWrite.write(self.serializeObjects())
+            self.pc -= 1 # Decrement stack pointer for now
+
+    def serializeObjects(self):
+        r"""
+        Serialize all the objects and return a bytes() object
+        that can be used to load an exact copy of the current
+        environment
+        # File format:
+        # \x00 - start object (id is next 6 chars)
+        # \x01 - end object
+        # \x02 - start/end object key
+        # \x03 - start/end object value
+        # \x04 - start int (32 bit)
+        # \x05 - start float (actually a double)
+        # \x06 - start/end pointer
+        # \x07 - start/end string
+        # (\x08) - escape next character
+        """
+        aStream = BytesIO()
+
+        def writeSomething(anObject, printId=True):
+            if isinstance(anObject, Pointer):
+                aStream.write(b'\x06')
                 aStream.write(anObject.id)
-            for key, value in anObject.items():
-                aStream.write(b'\x02')  # Begin key
-                writeSomething(key, printId)
-                aStream.write(b'\x03')  # Begin value
-                writeSomething(value, printId)
-            for aMemoryObject in anObject.directMemory:
-                writeSomething(aMemoryObject, printId)
-            aStream.write(b'\x01')
-        elif isinstance(anObject, int):
-            aStream.write(b'\x04')
-            aStream.write(struct.pack('>i', anObject))
-        elif isinstance(anObject, float):
-            aStream.write(b'\x05')
-            aStream.write(struct.pack('>d', anObject))
-        elif isinstance(anObject, (str, bytes)):
-            aStream.write(b'\x07')
-            toWrite = b''
-            for char in anObject:
-                if char == 0x07:
-                    toWrite += bytes([0x08])
-                toWrite += bytes([char])
-            aStream.write(toWrite)
-            aStream.write(b'\x07')
+                aStream.write(b'\x06')
+            elif isinstance(anObject, Object):
+                aStream.write(b'\x00')
+                if printId:
+                    aStream.write(anObject.id)
+                for key, value in anObject.items():
+                    aStream.write(b'\x02')  # Begin key
+                    writeSomething(key, printId)
+                    aStream.write(b'\x03')  # Begin value
+                    writeSomething(value, printId)
+                for aMemoryObject in anObject.directMemory:
+                    writeSomething(aMemoryObject, printId)
+                aStream.write(b'\x01')
+            elif isinstance(anObject, int):
+                aStream.write(b'\x04')
+                aStream.write(struct.pack('>i', anObject))
+            elif isinstance(anObject, float):
+                aStream.write(b'\x05')
+                aStream.write(struct.pack('>d', anObject))
+            elif isinstance(anObject, (str, bytes)):
+                aStream.write(b'\x07')
+                toWrite = b''
+                for char in anObject:
+                    if char == 0x07:
+                        toWrite += bytes([0x08])
+                    toWrite += bytes([char])
+                aStream.write(toWrite)
+                aStream.write(b'\x07')
 
-    aStream.write(b'QSIL1')
-    for anId, anObject in allobjects.items():
-        writeSomething(anObject)
+        aStream.write(b'QSIL')
+        aStream.write(str(imageFormat).encode('utf-8'))
+        for anId, anObject in self.allobjects.items():
+            writeSomething(anObject)
 
-    aStream.write(b'\xab\xcd\xef')
+        aStream.write(b'\xab\xcd\xef')
 
-    def writeContext(anObject):
-        if 'pc' in anObject:
-            aStream.write(b'ST')  # Context bytes
-            aStream.write(struct.pack('>i', anObject['pc']))  # Encode pc
-            aStream.write(anObject['method'].id)
-            aStream.write(b'\x06')  # End pointer
-            aStream.write(anObject['receiver'].id)
-            aStream.write(b'\x06')  # End pointer
-            writeSomething(anObject['args'], False)
-            writeSomething(anObject['tempvars'], False)
-            writeSomething(anObject['stack'], False)
-            writeContext(anObject['homeContext'].yourself)
-        else:
-            # Write a blank object
-            aStream.write(b'\x00')
+        def writeContext(anObject):
+            if 'pc' in anObject:
+                aStream.write(b'ST')  # Context bytes
+                aStream.write(struct.pack('>i', anObject['pc']))  # Encode pc
+                aStream.write(anObject['method'].id)
+                aStream.write(b'\x06')  # End pointer
+                aStream.write(anObject['receiver'].id)
+                aStream.write(b'\x06')  # End pointer
+                writeSomething(anObject['args'], False)
+                writeSomething(anObject['tempvars'], False)
+                writeSomething(anObject['stack'], False)
+                writeContext(anObject['homeContext'].yourself)
+            else:
+                # Write a blank object
+                aStream.write(b'\x00')
 
-    interp.saveToContext()  # Force a write of interpreter state variables
-    writeContext(interp.activeContext.yourself)
+        self.saveToContext()  # Force a write of interpreter state variables
+        writeContext(self.activeContext.yourself)
 
-    return aStream.getvalue()
+        return aStream.getvalue()
 
-allobjects = {}
-interp = Interpreter()
-
-starterBytes = (b'QSIL1'  # File header
+starterBytes = (b'QSIL1'  # File header (starter bytes for version 1)
                 b'\x00'  # Start object 1
                 b'\x00\x00\x00\x00\x00\x00'  # Object id (42-bit zero)
                 b'\x07'  # Begin string (bytecodes)
@@ -608,6 +633,8 @@ starterBytes = (b'QSIL1'  # File header
                 b'\x10\x00'  # Primitive: 0x00 (Int. Addition)
                 b'\x0a\x00'  # Pop to instance var 0
                 b'\x01\x00'  # Push inst var 0
+                b'\x10\xF0'  # Push image filename
+                b'\x10\xFF'  # Save image
                 b'\x06'  # Return
 
                 b'\x07'  # End string (bytecodes)
@@ -688,23 +715,13 @@ starterBytes = (b'QSIL1'  # File header
                 )
 
 if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        sys.argv = [sys.argv[0],'qsil{version}.image'.format(version=imageFormat)]                       
+    interp = Interpreter()
     try:
-        with open('test.image', 'rb') as b:
-            x = b.read()
-            starterBytes = x
-        read(starterBytes)  # Some test code
-        rehashObjects()
-        while True:
-            # This seems redundant, and useless, because this is just
-            # running a function normally, but this is important because
-            # it prevents Control+C from pausing in the middle of an
-            # operation, which helps to prevent corrupted contexts on a
-            # save. When a primitive is added for saving, then this
-            # can be removed.
-            target = threading.Thread(target=interp.interpretOne)
-            target.start()
-            target.join()
-    finally:
-        with open('test.image', 'wb') as b:
-            # This will exist until a primitive is added for saving
-            b.write(serializeObjects())
+        interp.readFile(sys.argv[1])
+    except FileNotFoundError as e:
+        interp.read(starterBytes)
+    while True:
+        interp.interpretOne()
