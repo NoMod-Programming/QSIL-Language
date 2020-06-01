@@ -1,0 +1,498 @@
+"Test"
+"test2"
+[
+    Object
+        subclass: #Object
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    
+    "Initialization"
+    [public initialize
+        ^ self
+    ]
+
+    "Accessing"
+    [public ifNil: aBlock
+        ^ self
+    ]
+    [public ifNotNil: aBlock
+        ^ aBlock value
+    ]
+    [public ifNil: nilBlock ifNotNil: notNilBlock
+        ^ notNilBlock value
+    ]
+    [public ifNotNil: notNilBlock ifNil: nilBlock
+        ^ notNilBlock value
+    ]
+
+    [public at: index
+        <bytecodes 'ff'>
+        self keyNotFound
+    ]
+    [public at: index put: value
+        <bytecodes 'ff'>
+       self keyNotFound
+    ]
+
+    [public instVarAt: index
+        | instVarIndex |
+        instVarIndex := self class instVars indexOf: index.
+        ^ self at: instVarIndex
+    ]
+    [public instVarAt: index put: value
+        | instVarIndex |
+        instVarIndex := self class isntVars indexOf: index.
+        ^ self at: instVarIndex put: value
+    ]
+
+    "Testing"
+    [public isNil
+        ^ false
+    ]
+    [public notNil
+        ^ true
+    ]
+    [public = otherValue
+        <bytecodes 'ff'>
+    ]
+    [public ~= otherValue
+        <bytecodes 'ff'>
+    ]
+
+    "Accessing"
+    [public size
+        <bytecodes 'ff'>
+    ]
+
+    "Error handling"
+    [public doesNotUnderstand: msg
+        ^ self
+    ]
+
+    "Class - creation"
+    [public static basicNew
+        <bytecodes '12 09'>
+    ]
+    [public static basicNew: size
+        <bytecodes '13 09'>
+    ]
+    [public static new
+        ^ (self basicNew) initialize
+    ]
+    [public static new: size
+        ^ (self basicNew: size) initialize
+    ]
+        )
+]
+
+[
+    Object
+        subclass: #Boolean
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+
+    "Boolean controlling"
+    [public ifTrue: trueBlock ifFalse: falseBlock
+        ^ self notImplemented
+    ]
+    [public ifFalse: falseBlock ifTrue: trueBlock
+        ^ self notImplemented
+    ]
+    [public ifTrue: trueBlock
+        ^ self notImplemented
+    ]
+    [public ifFalse: falseBlock
+        ^ self notImplemented
+    ]
+    [public and: otherBlock
+        ^ self notImplemented
+    ]
+    [public or: otherBlock
+        ^ self notImplemented
+    ]
+
+    "Logical Operations"
+    [public && otherValue
+        ^ self notImplemented
+    ]
+    [public || otherValue
+        ^ self notImplemented
+    ]
+    [public not
+        ^ self notImplemented
+    ]
+        )
+]
+[
+    Boolean
+        subclass: #True
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    "Boolean controlling"
+    [public ifTrue: trueBlock
+        ^ trueBlock value
+    ]
+    [public ifTrue: trueBlock ifFalse: falseBlock
+        ^ trueBlock value
+    ]
+    [public ifFalse: falseBlock ifTrue: trueBlock
+        ^ trueBlock value
+    ]
+    [public ifFalse: falseBlock
+        ^ self
+    ]
+    [public and: otherBlock
+        ^ otherBlock value
+    ]
+    [public or: otherBlock
+        ^ self
+        ]
+
+    "Logical Operations"
+    [public && otherValue
+        ^ self
+    ]
+    [public || otherValue
+        ^ otherValue
+    ]
+    [public not
+        ^ false
+    ]
+        )
+]
+[
+    Boolean
+        subclass: #False
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    "Boolean controlling"
+    [public ifTrue: trueBlock
+        ^ self
+    ]
+    [public ifTrue: trueBlock ifFalse: falseBlock
+        ^ falseBlock value
+    ]
+    [public ifFalse: falseBlock ifTrue: trueBlock
+        ^ falseBlock value
+    ]
+    [public ifFalse: falseBlock
+        ^ falseBlock value
+    ]
+    [public and: otherBlock
+        ^ self
+    ]
+    [public or: otherBlock
+        ^ otherBlock value
+    ]
+
+    "Logical Operations"
+    [public && otherValue
+        ^ self
+    ]
+    [public || otherValue
+        ^ otherValue
+    ]
+    [public not
+        ^ true
+    ]
+        )
+]
+
+[
+    Object
+        subclass: #UndefinedObject
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    "Testing"
+    [public isNil
+        ^ true
+    ]
+    [public notNil
+        ^ false
+    ]
+        )
+]
+
+[
+    Object
+        subclass: #Association
+        instanceVariableNames: 'key value'
+        classVariableNames: ''
+        methods: #(
+    "Initialization"
+    [public initialize
+        key := #a.
+        value := #b.
+    ]
+
+    "Accessing"
+    [public key
+        ^ key
+    ]
+    [public key: newKey
+        key := newKey.
+    ]
+    [public value
+        ^ value
+    ]
+    [public value: newValue
+        value := newValue.
+    ]
+
+        )
+]
+[
+    Object
+        variablePointerSubclass: #OrderedCollection
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    OrderedCollection
+        subclass: #Dictionary
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    [public initialize
+        ^ self
+    ]
+
+    "Accessing"
+    [public at: key
+        | index |
+        index := self indexForKey: key.
+        (index < 0) ifTrue: [
+            self keyNotFound
+        ].
+        ^ (super at: index) value
+    ]
+    [public at: key put: value
+        | index assoc |
+        index := self indexForKey: key.
+        (index < 0) ifTrue: [
+            self checkSize.
+            assoc := Association new.
+            assoc key: key.
+            assoc value: value.
+            super at: (self size + 1) put: assoc
+        ].
+        (super at: index) value: value.
+    ]
+    [public size
+        ^ super size "Need to reimplement this"
+    ]
+    [protected checkSize
+        ^ self "Need to implement become:"
+    ]
+    "Other"
+    [protected keyNotFound
+        ^ self "Exceptions not implemented yet"
+    ]
+    [protected indexForKey: key
+        (1 to: self size) do: [ :i |
+            ((super at: i) key == key) ifTrue: [^ i]
+        ].
+        ^ -1
+    ]
+        )
+]
+
+
+
+[
+    Object
+        variableByteSubclass: #ByteString
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #( )
+]
+
+[
+    Object
+        subclass: #Character
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    ByteString
+        variableByteSubclass: #Symbol
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    Object
+        subclass: #Integer
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    [public + otherNumber
+        <bytecodes '06 00 40 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public - otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public - otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public - otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public < otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public > otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public = otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+    [public % otherNumber
+        <bytecodes '06 00 41 09'>
+        "06 00 - Push arg 0"
+        "40 - Prim add"
+        "09 - Return"
+        ^ self
+    ]
+        )
+]
+[
+    Object
+        subclass: #QSILImage
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    Object
+        subclass: #Class
+        instanceVariableNames: 'type className superclass instVarNames classVarNames methods'
+        classVariableNames: ''
+        methods: #(
+            [public static name
+                ^ className
+            ]
+        )
+]
+[
+    Object
+        subclass: #Method
+        instanceVariableNames: 'methodName visibility args bytecodes literals class'
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    Object
+        subclass: #SubroutineContext
+        instanceVariableNames: 'pc stack receiver tempvars parentContext args'
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    SubroutineContext
+        subclass: #BlockContext
+        instanceVariableNames: 'literals blockBytecodes home'
+        classVariableNames: ''
+        methods: #(
+    [public value
+        <bytecodes '11 09'>
+    ]
+    [public value: valueOne
+        <bytecodes 'ff'>
+    ]
+    [public whileTrue: aBlock
+        <bytecodes '00 05 00 0e 10 0b 00 00 00 00 09 06 00 05 00 0e 0a 0f 00 00 00 00'>
+        "00 05 00 0e - self value"
+        "10 0b 00 00 00 - if return value is true, jump to bc 0b"
+        "00 09 - push self and return"
+        "06 00 05 00 0e 0a - aBlock value and pop"
+        "0f 00 00 00 00 - jump to bc 00"
+        #value.
+    ]
+        )
+]
+[
+    SubroutineContext
+        subclass: #MethodContext
+        instanceVariableNames: 'method'
+        classVariableNames: ''
+        methods: #( )
+]
+[
+    Object
+        subclass: #Transcript
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    [public show: argToShow
+        <bytecodes 'ff 00 09'>
+        "ff - temporary bytecode to prettyPrintObject"
+        "00 09 - push self and return"
+    ]
+        )
+]
+[
+    Object
+        subclass: #QSILImage
+        instanceVariableNames: 'allClasses'
+        classVariableNames: ''
+        methods: #(
+        )
+]
+
+"Bootstrapper"
+[
+    Object
+        subclass: #Bootstrap
+        instanceVariableNames: ''
+        classVariableNames: ''
+        methods: #(
+    [public static bootstrap
+        | assoc console |
+        assoc := Association new.
+        assoc key: 'test'.
+        assoc value: 'value!'.
+        console := Transcript new.
+        console show: assoc.
+        [true] whileTrue: [
+            (1 + 1)
+            "console show: (Association name)"
+        ]
+    ]
+        )
+]
